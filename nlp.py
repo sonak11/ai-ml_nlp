@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 DB_PATH     = "tennis_upsets.db"
 NLP_CSV_OUT = "nlp_features.csv"
 
-# ── Fatigue lexicon ───────────────────────────────────────────────────────────
+# fatigue lexicon 
 #
 #  Domain-specific word list: words/phrases strongly associated with
 #  physical or mental fatigue in an athlete's press conference speech.
@@ -89,8 +89,7 @@ ALL_FATIGUE_PHRASES = [
 ]
 
 
-# ── Sentiment model (DistilBERT) ──────────────────────────────────────────────
-
+# sentiment model (DistilBERT) 
 _sentiment_pipeline = None  # lazy-load
 
 
@@ -144,7 +143,7 @@ def compute_sentiment(text: str) -> dict:
     return {"label": label, "score": confidence, "polarity": round(polarity, 4)}
 
 
-# ── Fatigue keyword scoring ───────────────────────────────────────────────────
+# fatigue keyword scoring 
 
 def count_fatigue_keywords(text: str) -> dict:
     """
@@ -171,7 +170,7 @@ def count_fatigue_keywords(text: str) -> dict:
     return counts
 
 
-# ── spaCy preprocessing ───────────────────────────────────────────────────────
+# spaCy preprocessing 
 
 _spacy_nlp = None
 
@@ -234,7 +233,7 @@ def extract_text_features(text: str) -> dict:
     }
 
 
-# ── Mistral zero-shot labelling ───────────────────────────────────────────────
+# mistral zero-shot labelling 
 #
 #  We use the Hugging Face Inference API (free tier) with Mistral-7B-Instruct
 #  to zero-shot classify whether a transcript indicates fatigue or not.
@@ -345,8 +344,7 @@ def _parse_llm_json(text: str) -> dict:
         }
 
 
-# ── Database update ───────────────────────────────────────────────────────────
-
+# database update
 def ensure_nlp_columns() -> None:
     """Add NLP result columns to transcripts table if they don't exist."""
     conn   = sqlite3.connect(DB_PATH)
@@ -430,7 +428,7 @@ def update_transcript_row(conn: sqlite3.Connection, updates: dict) -> None:
     conn.execute(f"UPDATE transcripts SET {placeholders} WHERE id=?", values)
 
 
-# ── Demo data generator (if no real transcripts exist yet) ───────────────────
+# demo data generator (if no real transcripts exist yet) 
 
 DEMO_TRANSCRIPTS = [
     {
@@ -459,7 +457,7 @@ DEMO_TRANSCRIPTS = [
 ]
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# main 
 
 def main(use_llm: bool = False, demo_mode: bool = False) -> None:
     print("=" * 60)
