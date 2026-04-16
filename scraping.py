@@ -31,7 +31,7 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# configuration
 
 DB_PATH     = "tennis_upsets.db"
 DELAY_MIN   = 1.5   # seconds between requests (be polite)
@@ -54,7 +54,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ── Database helpers ──────────────────────────────────────────────────────────
+# database helpers 
 
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -106,7 +106,7 @@ def save_transcript(record: dict) -> None:
     conn.close()
 
 
-# ── HTTP helpers ──────────────────────────────────────────────────────────────
+# HTTP helpers 
 
 def polite_get(url: str, retries: int = MAX_RETRIES) -> requests.Response | None:
     """GET with exponential back-off and politeness delay."""
@@ -124,7 +124,7 @@ def polite_get(url: str, retries: int = MAX_RETRIES) -> requests.Response | None
     return None
 
 
-# ── ASAP Sports scraper ───────────────────────────────────────────────────────
+# ASAP Sports scraper
 #
 #  ASAP Sports URL structure for press conferences:
 #    https://www.asapsports.com/show_event.php?id=<EVENT_ID>
@@ -367,7 +367,7 @@ def _find_largest_text_div(soup: BeautifulSoup):
     return max(divs, key=lambda d: len(d.get_text()))
 
 
-# ── Player-match linking ──────────────────────────────────────────────────────
+# Player-match linking 
 
 def link_transcripts_to_players() -> None:
     """
@@ -416,7 +416,7 @@ def link_transcripts_to_players() -> None:
     log.info(f"Linked {linked_count}/{len(unlinked)} transcripts to player IDs.")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+#  Main 
 
 def main() -> None:
     print("=" * 60)
