@@ -72,7 +72,7 @@ FATIGUE_LEXICON: dict[str, list[str]] = {
         "injury", "injured", "pain", "painful", "hurts", "it hurts",
         "my knee", "my shoulder", "my back", "my wrist", "my ankle",
         "rolled my", "pulled my", "tight hamstring", "blister",
-        "medical timeout", "trainer", "strapping",
+        "medical timeout", "trainer", "strapping", "hurt", "stomach", "my abs" ,
     ],
     "motivation_doubt": [
         "not sure", "doubt", "doubts", "difficult to stay motivated",
