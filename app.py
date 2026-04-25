@@ -30,6 +30,12 @@ html, body, [class*="css"] {
 .stApp { background: #050508; }
 section[data-testid="stSidebar"] { display: none; }
 [data-testid="collapsedControl"] { display: none; }
+header[data-testid="stHeader"] { display: none !important; }
+#MainMenu { display: none !important; }
+footer { display: none !important; }
+.stDeployButton { display: none !important; }
+[data-testid="stToolbar"] { display: none !important; }
+.block-container { padding-top: 1rem !important; }
 .block-container { padding: 0 2rem 4rem !important; max-width: 1200px !important; }
 
 /* ── Top Nav ── */
@@ -640,32 +646,107 @@ def search_transcripts(query, player=None, n=5, upset_only=True):
     return docs[:n]
 
 def answer_sql(question):
+    """Returns (df_or_None, summary_string)."""
     try:
         import sqlite3, pandas as pd
         if not db_ok:
             raise Exception("no db")
         conn = sqlite3.connect("tennis_upsets.db")
         q    = question.lower()
-        if "upset rate" in q and ("slam" in q or "tournament" in q):
-            df = pd.read_sql("SELECT slam_name, COUNT(*) as matches, ROUND(AVG(upset)*100,1) as upset_pct FROM matches GROUP BY slam_name ORDER BY upset_pct DESC", conn)
-        elif "biggest" in q or "rank" in q:
-            df = pd.read_sql("SELECT winner_name, loser_name, rank_diff, slam_name, round FROM matches WHERE upset=1 ORDER BY rank_diff DESC LIMIT 10", conn)
-        elif "round" in q:
-            df = pd.read_sql("SELECT round, COUNT(*) as matches, ROUND(AVG(upset)*100,1) as upset_pct FROM matches GROUP BY round ORDER BY upset_pct DESC", conn)
-        elif "how many" in q or "count" in q or "total" in q:
-            df = pd.read_sql("SELECT COUNT(*) as total_matches, SUM(upset) as upsets, ROUND(AVG(upset)*100,1) as upset_pct FROM matches", conn)
-        elif any(n in q for n in ["favourite","favorite","top-10","top 10"]):
-            df = pd.read_sql("SELECT loser_name as player, COUNT(*) as upset_losses FROM matches WHERE upset=1 AND loser_rank<=10 GROUP BY loser_name ORDER BY upset_losses DESC LIMIT 10", conn)
+
+        if "upset rate" in q and ("slam" in q or "tournament" in q or "grand" in q):
+            df = pd.read_sql("""
+                SELECT slam_name AS Tournament,
+                       COUNT(*) AS Matches,
+                       SUM(upset) AS Upsets,
+                       ROUND(AVG(upset)*100,1) AS "Upset Rate %"
+                FROM matches GROUP BY slam_name ORDER BY "Upset Rate %" DESC
+            """, conn)
+            summary = "Upset rate by Grand Slam (higher = more unpredictable):"
+
+        elif "biggest" in q or ("rank" in q and "gap" in q) or "largest" in q:
+            df = pd.read_sql("""
+                SELECT winner_name AS Winner, loser_name AS Loser,
+                       CAST(rank_diff AS INT) AS "Rank Gap",
+                       slam_name AS Tournament, round AS Round,
+                       SUBSTR(tourney_date,1,4) AS Year
+                FROM matches WHERE upset=1 ORDER BY rank_diff DESC LIMIT 10
+            """, conn)
+            summary = "Biggest upsets by rank gap (Winner's rank minus Loser's rank):"
+
+        elif "round" in q and ("upset" in q or "rate" in q):
+            df = pd.read_sql("""
+                SELECT round AS Round, COUNT(*) AS Matches,
+                       ROUND(AVG(upset)*100,1) AS "Upset Rate %"
+                FROM matches GROUP BY round ORDER BY "Upset Rate %" DESC
+            """, conn)
+            summary = "Upset rate by round:"
+
+        elif "how many" in q or "count" in q or "total" in q or "dataset" in q:
+            df = pd.read_sql("""
+                SELECT COUNT(*) AS "Total Matches",
+                       SUM(upset) AS "Total Upsets",
+                       ROUND(AVG(upset)*100,1) AS "Overall Upset Rate %"
+                FROM matches
+            """, conn)
+            summary = "Dataset overview:"
+
+        elif any(n in q for n in ["favourite","favorite","top-10","top 10","top10"]):
+            df = pd.read_sql("""
+                SELECT loser_name AS Player,
+                       COUNT(*) AS "Times Lost as Favourite"
+                FROM matches WHERE upset=1 AND loser_rank<=10
+                GROUP BY loser_name ORDER BY "Times Lost as Favourite" DESC LIMIT 10
+            """, conn)
+            summary = "Top-10 players who lost most often as the favourite:"
+
+        elif "surface" in q or "grass" in q or "clay" in q or "hard" in q:
+            df = pd.read_sql("""
+                SELECT surface AS Surface,
+                       COUNT(*) AS Matches,
+                       ROUND(AVG(upset)*100,1) AS "Upset Rate %"
+                FROM matches WHERE surface IS NOT NULL
+                GROUP BY surface ORDER BY "Upset Rate %" DESC
+            """, conn)
+            summary = "Upset rate by surface:"
+
+        elif any(name in question for name in
+                 ["Djokovic","Nadal","Federer","Alcaraz","Sinner","Medvedev",
+                  "Tsitsipas","Zverev","Rublev","Murray"]):
+            # Player-specific query
+            for name in ["Djokovic","Nadal","Federer","Alcaraz","Sinner","Medvedev",
+                          "Tsitsipas","Zverev","Rublev","Murray"]:
+                if name in question:
+                    df = pd.read_sql(f"""
+                        SELECT slam_name AS Tournament, round AS Round,
+                               winner_name AS Winner, loser_name AS Loser,
+                               CAST(rank_diff AS INT) AS "Rank Gap",
+                               SUBSTR(tourney_date,1,4) AS Year
+                        FROM matches
+                        WHERE upset=1 AND (winner_name LIKE '%{name}%' OR loser_name LIKE '%{name}%')
+                        ORDER BY tourney_date DESC LIMIT 10
+                    """, conn)
+                    summary = f"Recent upset matches involving {name}:"
+                    break
         else:
-            df = pd.read_sql("SELECT slam_name, COUNT(*) as matches, ROUND(AVG(upset)*100,1) as upset_rate FROM matches GROUP BY slam_name", conn)
+            df = pd.read_sql("""
+                SELECT slam_name AS Tournament, COUNT(*) AS Matches,
+                       ROUND(AVG(upset)*100,1) AS "Upset Rate %"
+                FROM matches GROUP BY slam_name ORDER BY "Upset Rate %" DESC
+            """, conn)
+            summary = "Upset summary by Grand Slam:"
+
         conn.close()
-        return df.to_string(index=False)
+        return df, summary
+
     except Exception:
-        return ("Demo stats — approx. 2,800 Grand Slam matches across 2015–2024:\n"
-                "  Wimbledon        28.4% upset rate\n"
-                "  Roland Garros    27.8%\n"
-                "  Australian Open  25.0%\n"
-                "  US Open          23.2%")
+        import pandas as pd
+        df = pd.DataFrame({
+            "Tournament":   ["Wimbledon","Roland Garros","Australian Open","US Open"],
+            "Upset Rate %": [30.5, 29.3, 28.5, 26.7],
+            "Note":         ["Demo data"]*4,
+        })
+        return df, "Demo stats (run pipeline for real data):"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PAGE: HOME
@@ -878,17 +959,28 @@ elif page == "Scouting Report":
                                   placeholder="gsk_... (optional)", key="groq_scout")
 
     PLAYERS = ["Carlos Alcaraz","Novak Djokovic","Rafael Nadal","Jannik Sinner",
-               "Daniil Medvedev","Stefanos Tsitsipas","Alexander Zverev","Andrey Rublev"]
+               "Daniil Medvedev","Stefanos Tsitsipas","Alexander Zverev","Andrey Rublev",
+               "Roger Federer","Dominic Thiem","Felix Auger-Aliassime","Taylor Fritz",
+               "Casper Ruud","Holger Rune","Ben Shelton","Frances Tiafoe"]
 
     if db_ok:
         try:
             import sqlite3
-            conn    = sqlite3.connect("tennis_upsets.db")
-            rows    = conn.execute("SELECT DISTINCT player_name FROM transcripts WHERE player_name != 'Unknown' ORDER BY player_name").fetchall()
+            conn = sqlite3.connect("tennis_upsets.db")
+            # Pull players sorted by frequency so the most-transcribed players appear first
+            rows = conn.execute("""
+                SELECT player_name, COUNT(*) as cnt
+                FROM transcripts
+                WHERE player_name IS NOT NULL
+                  AND player_name != 'Unknown'
+                  AND LENGTH(player_name) > 3
+                GROUP BY player_name
+                ORDER BY cnt DESC
+                LIMIT 80
+            """).fetchall()
             conn.close()
-            db_players = [r[0] for r in rows if r[0]]
-            if db_players:
-                PLAYERS = db_players[:50]
+            if rows:
+                PLAYERS = [r[0] for r in rows]
         except Exception:
             pass
 
@@ -1033,23 +1125,33 @@ elif page == "Ask the Model":
 
     # Render messages
     for msg in st.session_state.messages:
-        if msg["role"]=="user":
-            st.markdown(f"<div class='chat-user'>{msg['content']}</div>", unsafe_allow_html=True)
+        if msg["role"] == "user":
+            st.markdown(f"<div class='chat-user'>{msg['content']}</div>",
+                        unsafe_allow_html=True)
         else:
             content = msg["content"]
-            if "\n" in content and any(c.isdigit() for c in content[:50]):
-                content = f"```\n{content}\n```"
-            source = msg.get("source","")
-            src_tag = f"<div class='chat-source'>{source}</div>" if source else ""
-            st.markdown(f"<div class='chat-bot'>{content}{src_tag}</div>", unsafe_allow_html=True)
-
+            source  = msg.get("source", "")
+            src_tag = f"<div class='chat-source' style='margin-top:0.5rem'>{source}</div>" if source else ""
+            # Render code blocks properly
+            if "```" in content:
+                parts   = content.split("```")
+                display = parts[0]
+                if len(parts) > 1:
+                    table_block = parts[1].replace("\n","<br>")
+                    display += f"<pre style='background:#0d0d1e;padding:0.8rem;border-radius:6px;font-family:JetBrains Mono,monospace;font-size:0.72rem;color:#6666aa;overflow-x:auto;margin-top:0.5rem'>{table_block}</pre>"
+                st.markdown(f"<div class='chat-bot'>{display}{src_tag}</div>",
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div class='chat-bot'>{content}{src_tag}</div>",
+                            unsafe_allow_html=True)
             if msg.get("snippets"):
                 with st.expander("View transcript excerpts"):
                     for s in msg["snippets"][:3]:
                         outcome = "🔴 UPSET" if s.get("upset") else "🟢 Win"
                         st.markdown(
                             f"<div class='snippet'><div class='snippet-meta'>"
-                            f"{s.get('player','?')} · {s.get('tournament','?')} {s.get('round','')} · {outcome}</div>"
+                            f"{s.get('player','?')} · {s.get('tournament','?')} "
+                            f"{s.get('round','')} · {outcome}</div>"
                             f"{s['text'][:380]}</div>", unsafe_allow_html=True)
 
     # Input
@@ -1071,38 +1173,75 @@ elif page == "Ask the Model":
 
         with st.spinner("Thinking…"):
             if is_transcript_q:
-                snippets = search_transcripts(question, n=4, upset_only=False)
+                snippets  = search_transcripts(question, n=4, upset_only=False)
+                df_result = None
                 if groq_key and snippets:
                     context = "\n\n".join(
                         f"[{s.get('player','?')} – {s.get('tournament','?')} {s.get('round','')}]: {s['text'][:350]}"
                         for s in snippets
                     )
-                    prompt = (f"You are a tennis analyst. Answer this question concisely based on these transcript excerpts:\n\n"
+                    prompt = (f"You are a tennis analyst. Answer concisely:\n\n"
                               f"QUESTION: {question}\n\nEXCERPTS:\n{context}\n\nAnswer in 2-3 sentences:")
                     answer = groq_call(prompt, groq_key, max_tokens=200) or ""
                 if not answer:
                     answer = "\n\n".join(
-                        f"**{s.get('player','?')} — {s.get('tournament','?')} {s.get('round','')}** "
-                        f"({'UPSET' if s.get('upset') else 'win'}): {s['text'][:300]}…"
+                        f"**{s.get('player','?')} — {s.get('tournament','?')} {s.get('round','')}**"
+                        f" ({'UPSET' if s.get('upset') else 'win'}): {s['text'][:280]}…"
                         for s in snippets[:3]
                     ) or "No matching transcripts found."
                 source = "◎ Transcript search"
             else:
-                sql_answer = answer_sql(question)
-                if groq_key:
-                    prompt = (f"You are a tennis analyst. The user asked: '{question}'\n\n"
-                              f"Here is the data:\n{sql_answer}\n\n"
-                              f"Answer the question in 1-2 clear sentences using this data.")
-                    answer = groq_call(prompt, groq_key, max_tokens=150) or sql_answer
-                else:
-                    answer = sql_answer
+                df_result, summary = answer_sql(question)
+                ai_insight = ""
+                if groq_key and df_result is not None:
+                    data_str  = df_result.to_string(index=False)
+                    prompt    = (f"Tennis analyst. User asked: '{question}'\nData:\n{data_str}\n\n"
+                                 f"Write 1 clear, insightful sentence about the most interesting finding.")
+                    ai_insight = groq_call(prompt, groq_key, max_tokens=80) or ""
+                answer = ai_insight if ai_insight else summary
                 source = "🗄️ SQL query"
 
-        content = answer
-        if "\n" in content and any(c.isdigit() for c in content[:50]):
-            content = f"```\n{content}\n```"
-        src_tag = f"<div class='chat-source'>{source}</div>"
-        st.markdown(f"<div class='chat-bot'>{content}{src_tag}</div>", unsafe_allow_html=True)
+        # ── Render the response ──────────────────────────────────────────
+        if df_result is not None and not df_result.empty:
+            # Build HTML table
+            cols_html = "".join(
+                f"<th style='padding:6px 12px;text-align:left;font-family:JetBrains Mono,monospace;"
+                f"font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;color:#33334a;"
+                f"border-bottom:1px solid #16162a'>{c}</th>"
+                for c in df_result.columns
+            )
+            rows_html = ""
+            for i, row in df_result.iterrows():
+                bg = "#0a0a18" if i%2==0 else "#080812"
+                cells = "".join(
+                    f"<td style='padding:8px 12px;font-size:0.85rem;color:#aaaacc;"
+                    f"border-bottom:1px solid #0d0d1e'>{v}</td>"
+                    for v in row.values
+                )
+                rows_html += f"<tr style='background:{bg}'>{cells}</tr>"
+
+            table_html = (
+                f"<div style='overflow-x:auto;margin-top:0.8rem'>"
+                f"<table style='width:100%;border-collapse:collapse'>"
+                f"<thead><tr>{cols_html}</tr></thead>"
+                f"<tbody>{rows_html}</tbody></table></div>"
+            )
+            full_html = (
+                f"<div class='chat-bot'>"
+                f"<div style='margin-bottom:0.6rem;color:#c0c0e0'>{answer}</div>"
+                f"{table_html}"
+                f"<div class='chat-source' style='margin-top:0.6rem'>{source}</div>"
+                f"</div>"
+            )
+            st.markdown(full_html, unsafe_allow_html=True)
+            table_str = df_result.to_string(index=False)
+        else:
+            st.markdown(
+                f"<div class='chat-bot'>{answer}"
+                f"<div class='chat-source' style='margin-top:0.5rem'>{source}</div></div>",
+                unsafe_allow_html=True
+            )
+            table_str = ""
 
         if snippets:
             with st.expander("View transcript excerpts"):
@@ -1110,12 +1249,17 @@ elif page == "Ask the Model":
                     outcome = "🔴 UPSET" if s.get("upset") else "🟢 Win"
                     st.markdown(
                         f"<div class='snippet'><div class='snippet-meta'>"
-                        f"{s.get('player','?')} · {s.get('tournament','?')} {s.get('round','')} · {outcome}</div>"
+                        f"{s.get('player','?')} · {s.get('tournament','?')} "
+                        f"{s.get('round','')} · {outcome}</div>"
                         f"{s['text'][:380]}</div>", unsafe_allow_html=True)
 
+        # Save full content to history
+        full_content = answer
+        if table_str:
+            full_content += f"\n\n```\n{table_str}\n```"
         st.session_state.messages.append({
-            "role":"assistant","content":answer,
-            "snippets":snippets,"source":source
+            "role": "assistant", "content": full_content,
+            "snippets": snippets, "source": source, "has_table": False,
         })
 
     if len(st.session_state.messages) > 1:
