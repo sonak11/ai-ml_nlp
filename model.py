@@ -458,7 +458,7 @@ def main() -> None:
     print("\nGenerating plots …")
     plot_roc_comparison(res_a, res_b, y_test)
     plot_confusion_matrices(res_a, res_b, y_test)
-    plot_shap_importance(pipe_b, test[full_cols], full_cols, label="Full model")
+    #plot_shap_importance(pipe_b, test[full_cols], full_cols, label="Full model")
     plot_upset_rate_by_fatigue(df)
 
     # save model
