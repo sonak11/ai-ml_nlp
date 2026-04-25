@@ -352,7 +352,7 @@ def plot_shap_importance(model: Pipeline, X_test: pd.DataFrame,
     sorted_idx = np.argsort(mean_abs)[::-1][:20]
 
     ax.barh(
-        [all_names[i] if i < len(all_names) else f"feat_{i}" for i in sorted_idx[::-1]],
+        [all_names[int(i)] if int(i) < len(all_names) else f"feat_{int(i)}" for i in sorted_idx[::-1]],
         mean_abs[sorted_idx[::-1]],
         color="#5C5CE0",
         edgecolor="none",

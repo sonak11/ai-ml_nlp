@@ -179,7 +179,7 @@ def get_spacy():
     global _spacy_nlp
     if _spacy_nlp is None:
         import spacy
-        _spacy_nlp = spacy.load("en_core_web_sm", disable=["ner", "parser"])
+        _spacy_nlp = spacy.load("en_core_web_sm", disable=["ner"])
     return _spacy_nlp
 
 
