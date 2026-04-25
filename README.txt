@@ -1,4 +1,4 @@
-# 🎾 GrandSlam IQ — Tennis Upset Intelligence
+ 🎾 GrandSlam IQ — Tennis Upset Intelligence
 
 > **Can AI predict a Grand Slam tennis upset before it happens?**
 >
