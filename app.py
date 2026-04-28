@@ -406,9 +406,9 @@ model_ok = os.path.exists("upset_model.pkl")
 st.markdown('<div class="gs-nav"><div class="gs-logo">GrandSlam IQ<sup>beta</sup></div></div>',
             unsafe_allow_html=True)
 
-nav = st.columns([2.5, 1, 1, 1.4, 1, 1, 1])
+nav = st.columns([1.8, 0.8, 0.8, 1.2, 0.9, 0.9, 0.9])
 pairs = [("Home","Home"),("Blog","Blog"),("Method","How I Built This"),
-         ("⚡ Alert","⚡ Upset Alert"),("◎ Scout","◎ Scouting"),("◉ Chat","◉ Ask the Model")]
+         ("⚡ Alert","⚡ Upset Alert"),("Scout","◎ Scouting"),("Chat","◉ Ask the Model")]
 for col,(label,target) in zip(nav[1:],pairs):
     with col:
         if st.button(label, key=f"nav_{label}", use_container_width=True):
@@ -523,6 +523,18 @@ DEMO_TRANSCRIPTS = [
      "text":"My abs are very painful. I've had medical timeouts twice this week. I have real doubts about finishing the tournament healthy. The fatigue is real after so many sets."},
     {"player":"Jannik Sinner","tournament":"US Open","round":"SF","upset":0,"rank_diff":-5,
      "text":"I feel great. My serve is working well and I'm moving very well. I had a perfect rest day. Looking forward to the challenge and I believe in my game."},
+    {"player":"Coco Gauff","tournament":"Roland Garros","round":"SF","upset":1,"rank_diff":12,
+     "text":"My shoulder has been a little sore the last few days. I've been a little mentally drained from all the matches. It's tough to stay focused when your body is tired. I'm not feeling 100 percent but I'll fight."},
+    {"player":"Coco Gauff","tournament":"US Open","round":"QF","upset":1,"rank_diff":8,
+     "text":"Physically I felt really tired in the third set. My legs were heavy. I've played a lot of tennis in the last two weeks and the fatigue is definitely there. My back was a bit tight during the match."},
+    {"player":"Iga Swiatek","tournament":"Wimbledon","round":"QF","upset":1,"rank_diff":25,
+     "text":"The grass is always tricky for me mentally. I had some doubts today — the surface doesn't suit my game as well. I'm physically okay but mentally it's a challenge to stay confident on grass courts."},
+    {"player":"Iga Swiatek","tournament":"Roland Garros","round":"SF","upset":0,"rank_diff":-20,
+     "text":"I feel very good. My game is clicking and I feel comfortable on clay. I've managed my schedule well this week and I'm ready to go. Really confident going into tomorrow."},
+    {"player":"Aryna Sabalenka","tournament":"Australian Open","round":"SF","upset":1,"rank_diff":15,
+     "text":"My knee has been bothering me and I had some treatment yesterday. I'm taking some pain medication to get through. Mentally I feel a little drained after the tough matches this week."},
+    {"player":"Elena Rybakina","tournament":"Wimbledon","round":"F","upset":0,"rank_diff":-10,
+     "text":"I feel great, really confident. My serve has been fantastic this tournament. I had a great rest yesterday. I'm ready to compete and I believe in myself completely."},
 ]
 
 def search_transcripts(query, player=None, n=5, upset_only=True):
@@ -530,23 +542,43 @@ def search_transcripts(query, player=None, n=5, upset_only=True):
         import sqlite3
         if db_ok:
             conn=sqlite3.connect("tennis_upsets.db")
-            rows=conn.execute("SELECT player_name,tourney_name,round,raw_text FROM transcripts WHERE raw_text IS NOT NULL").fetchall()
+            # Try to join with matches to get upset flag; fall back to transcripts-only
+            try:
+                rows=conn.execute("""
+                    SELECT t.player_name, t.tourney_name, t.round, t.raw_text,
+                           COALESCE(m.upset, 0) as upset
+                    FROM transcripts t
+                    LEFT JOIN matches m ON (
+                        t.player_name = m.winner_name OR t.player_name = m.loser_name
+                    ) AND t.tourney_name = m.slam_name
+                    WHERE t.raw_text IS NOT NULL AND LENGTH(t.raw_text) > 100
+                """).fetchall()
+            except Exception:
+                rows=conn.execute(
+                    "SELECT player_name,tourney_name,round,raw_text,0 FROM transcripts WHERE raw_text IS NOT NULL AND LENGTH(raw_text)>100"
+                ).fetchall()
             conn.close()
-            docs=[{"player":r[0],"tournament":r[1],"round":r[2],"upset":0,"rank_diff":0,"text":(r[3] or "")[:600]} for r in rows]
+            docs=[{"player":r[0],"tournament":r[1],"round":r[2],
+                   "text":(r[3] or "")[:600],"upset":int(r[4] or 0),"rank_diff":0}
+                  for r in rows if r[0] and r[3]]
+            # Filter by player name (case-insensitive, partial match)
             if player:
                 filtered=[d for d in docs if player.lower() in (d["player"] or "").lower()]
                 docs=filtered if filtered else docs
+            # Score by query keyword overlap
             qw=set(re.findall(r"\w+",query.lower()))
             docs.sort(key=lambda d:-len(qw&set(re.findall(r"\w+",d["text"].lower()))))
-            return docs[:n]
+            if docs:
+                return docs[:n]
     except Exception: pass
-    docs=DEMO_TRANSCRIPTS
+    # Demo fallback
+    docs=list(DEMO_TRANSCRIPTS)
     if player:
         filtered=[d for d in docs if player.lower() in d["player"].lower()]
         docs=filtered if filtered else docs
     if upset_only:
         docs2=[d for d in docs if d.get("upset")]
-        docs=docs2 if docs2 else docs
+        docs=docs2 if docs2 else docs  # fallback to all if none found
     return docs[:n]
 
 def answer_sql(question):
@@ -1173,7 +1205,10 @@ elif page == "◎ Scouting":
     PLAYERS = ["Carlos Alcaraz","Novak Djokovic","Rafael Nadal","Jannik Sinner",
                "Daniil Medvedev","Stefanos Tsitsipas","Alexander Zverev","Andrey Rublev",
                "Roger Federer","Dominic Thiem","Holger Rune","Taylor Fritz",
-               "Casper Ruud","Ben Shelton","Frances Tiafoe","Felix Auger-Aliassime"]
+               "Casper Ruud","Ben Shelton","Frances Tiafoe","Felix Auger-Aliassime",
+               "Iga Swiatek","Aryna Sabalenka","Coco Gauff","Elena Rybakina",
+               "Jessica Pegula","Marketa Vondrousova","Karolina Muchova",
+               "Barbora Krejcikova","Madison Keys","Mirra Andreeva"]
     if db_ok:
         try:
             import sqlite3
@@ -1224,7 +1259,10 @@ elif page == "◎ Scouting":
                         +"\n\n*Add a Groq API key (⚙️) for a full AI-written scouting report.*")
 
             st.markdown("<div style='font-weight:600;color:#1c1c1e;font-size:1rem;margin-bottom:0.6rem'>Scouting Report</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='gs-card'>{report}</div>", unsafe_allow_html=True)
+            st.markdown("""<div style="background:#fff;border:1.5px solid #dde3ee;border-left:4px solid #2563eb;
+                        border-radius:0 14px 14px 0;padding:1.5rem 1.8rem;margin-bottom:0.5rem;
+                        box-shadow:0 1px 4px #0000000a"></div>""", unsafe_allow_html=True)
+            st.markdown(report)
 
             # Signal bars
             CATS2={"Physical":["tired","exhausted","heavy legs","cramping","sore"],
