@@ -322,24 +322,51 @@ def merge_transcripts(matches: pd.DataFrame, transcripts: pd.DataFrame) -> pd.Da
     ]
     available = [c for c in nlp_cols if c in transcripts.columns]
 
-    trans_subset = transcripts[["player_id", "tourney_name", "round"] + available].copy()
+    # Use player_name as join key (player_id is NULL for most scraped transcripts)
+    trans_subset = transcripts[["player_name", "tourney_name", "round"] + available].copy()
 
     # Standardise round labels for joining
     round_map = {
         "first round": "R1", "second round": "R2", "third round": "R3",
         "fourth round": "R4", "quarterfinal": "QF", "semifinal": "SF",
         "final": "F", "r1": "R1", "r2": "R2", "r3": "R3", "r4": "R4",
+        "unknown": None,
     }
     trans_subset["round"] = (
         trans_subset["round"].str.lower().map(round_map).fillna(trans_subset["round"])
     )
 
+    # Normalise player names: strip whitespace, title-case
+    trans_subset["player_name"] = trans_subset["player_name"].str.strip().str.title()
+    matches["player_name"]      = matches["player_name"].str.strip().str.title()
+
+    # Aggregate: if multiple transcripts per player+tourney+round, take mean of NLP cols
+    trans_agg = (
+        trans_subset
+        .groupby(["player_name", "tourney_name", "round"], as_index=False)
+        [available]
+        .mean()
+    )
+
+    # Primary join: player_name + tourney_name + round
     merged = matches.merge(
-        trans_subset,
-        on=["player_id", "tourney_name", "round"],
+        trans_agg,
+        on=["player_name", "tourney_name", "round"],
         how="left",
         suffixes=("", "_transcript"),
     )
+
+    # Fallback join on player_name + slam_name (some transcripts use slam_name not tourney_name)
+    unmatched_mask = merged[available[0]].isna() if available else pd.Series(False, index=merged.index)
+    if unmatched_mask.sum() > 0 and "slam_name" in trans_subset.columns:
+        trans_slam = trans_subset.copy()
+        trans_slam = trans_slam.rename(columns={"tourney_name": "slam_name"})
+        fallback   = matches[unmatched_mask].merge(
+            trans_slam.groupby(["player_name","slam_name","round"],as_index=False)[available].mean(),
+            on=["player_name","slam_name","round"], how="left", suffixes=("","_t")
+        )
+        for col in available:
+            merged.loc[unmatched_mask, col] = fallback[col].values
 
     n_matched = merged[available[0]].notna().sum() if available else 0
     print(f"Transcript features matched: {n_matched:,}/{len(merged):,} rows")

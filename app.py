@@ -660,7 +660,7 @@ def sig_bars(counts, colors):
 if page == "Home":
     st.markdown("""
     <div class="hero-wrap">
-      <div class="hero-tag">🎾 Grand Slam Analytics · 2022–2024</div>
+      <div class="hero-tag">🎾 ATP + WTA Grand Slam Analytics · 2022–2024</div>
       <div class="hero-title">
         The press conference<br>knows before<br><em>the match does.</em>
       </div>
@@ -685,7 +685,7 @@ if page == "Home":
         <div class="stat-lbl">Press conferences</div>
       </div>
       <div class="stat-cell">
-        <div class="stat-num">0.70</div>
+        <div class="stat-num">0.71</div>
         <div class="stat-lbl">Model AUC</div>
       </div>
       <div class="stat-cell">
