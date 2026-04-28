@@ -559,44 +559,75 @@ def search_transcripts(query, player=None, n=5, upset_only=True):
     try:
         import sqlite3
         if db_ok:
-            conn=sqlite3.connect("tennis_upsets.db")
-            # Try to join with matches to get upset flag; fall back to transcripts-only
-            try:
-                rows=conn.execute("""
-                    SELECT t.player_name, t.tourney_name, t.round, t.raw_text,
-                           COALESCE(m.upset, 0) as upset
-                    FROM transcripts t
-                    LEFT JOIN matches m ON (
-                        t.player_name = m.winner_name OR t.player_name = m.loser_name
-                    ) AND t.tourney_name = m.slam_name
-                    WHERE t.raw_text IS NOT NULL AND LENGTH(t.raw_text) > 100
-                """).fetchall()
-            except Exception:
-                rows=conn.execute(
-                    "SELECT player_name,tourney_name,round,raw_text,0 FROM transcripts WHERE raw_text IS NOT NULL AND LENGTH(raw_text)>100"
-                ).fetchall()
-            conn.close()
-            docs=[{"player":r[0],"tournament":r[1],"round":r[2],
-                   "text":(r[3] or "")[:600],"upset":int(r[4] or 0),"rank_diff":0}
-                  for r in rows if r[0] and r[3]]
-            # Filter by player name (case-insensitive, partial match)
+            conn = sqlite3.connect("tennis_upsets.db")
+
+            # Build player filter clause
+            player_clause = ""
+            params = []
             if player:
-                filtered=[d for d in docs if player.lower() in (d["player"] or "").lower()]
-                docs=filtered if filtered else docs
-            # Score by query keyword overlap
-            qw=set(re.findall(r"\w+",query.lower()))
-            docs.sort(key=lambda d:-len(qw&set(re.findall(r"\w+",d["text"].lower()))))
-            if docs:
-                return docs[:n]
-    except Exception: pass
+                player_clause = "AND LOWER(t.player_name) LIKE LOWER(?)"
+                params.append(f"%{player.split()[0]}%")  # match on first name
+
+            # Get transcripts — don't join matches (creates duplicates)
+            # Instead get upset flag from a subquery keyed on player+slam
+            rows = conn.execute(f"""
+                SELECT DISTINCT
+                    t.player_name,
+                    t.tourney_name,
+                    t.round,
+                    t.raw_text,
+                    COALESCE((
+                        SELECT MAX(m.upset)
+                        FROM matches m
+                        WHERE (LOWER(m.winner_name)=LOWER(t.player_name)
+                               OR LOWER(m.loser_name)=LOWER(t.player_name))
+                          AND m.slam_name = t.tourney_name
+                        LIMIT 1
+                    ), 0) AS upset
+                FROM transcripts t
+                WHERE t.raw_text IS NOT NULL
+                  AND LENGTH(t.raw_text) > 100
+                  {player_clause}
+                LIMIT 2000
+            """, params).fetchall()
+            conn.close()
+
+            docs = [
+                {"player": r[0], "tournament": r[1], "round": r[2],
+                 "text": (r[3] or "")[:600], "upset": int(r[4] or 0), "rank_diff": 0}
+                for r in rows if r[0] and r[3]
+            ]
+
+            # Refine player filter with full name check
+            if player:
+                pl = player.lower()
+                refined = [d for d in docs if pl in (d["player"] or "").lower()
+                           or pl.split()[-1] in (d["player"] or "").lower()]
+                docs = refined if refined else docs
+
+            # Apply upset filter
+            if upset_only:
+                filtered = [d for d in docs if d.get("upset")]
+                docs = filtered if filtered else docs  # fallback to all if none
+
+            # Score by keyword overlap with query
+            qw = set(re.findall(r"\w+", query.lower()))
+            docs.sort(key=lambda d: -len(qw & set(re.findall(r"\w+", d["text"].lower()))))
+            return docs[:n]
+
+    except Exception as e:
+        pass  # fall through to demo
+
     # Demo fallback
-    docs=list(DEMO_TRANSCRIPTS)
+    docs = list(DEMO_TRANSCRIPTS)
     if player:
-        filtered=[d for d in docs if player.lower() in d["player"].lower()]
-        docs=filtered if filtered else docs
+        pl = player.lower()
+        filtered = [d for d in docs if pl in d["player"].lower()
+                    or pl.split()[-1] in d["player"].lower()]
+        docs = filtered if filtered else docs
     if upset_only:
-        docs2=[d for d in docs if d.get("upset")]
-        docs=docs2 if docs2 else docs  # fallback to all if none found
+        docs2 = [d for d in docs if d.get("upset")]
+        docs = docs2 if docs2 else docs
     return docs[:n]
 
 def answer_sql(question):
@@ -1189,8 +1220,14 @@ elif page == "⚡ Upset Alert":
                 top=sorted(sd.items(),key=lambda x:abs(x[1]),reverse=True)[:2]
                 names=[f for f,_ in top]
                 lvl="high" if prob>0.6 else "moderate" if prob>0.4 else "low"
-                exp=(f"The model assigns **{lvl}** upset risk ({prob*100:.0f}%) for **{player}**. "
-                     f"The strongest drivers are **{names[0]}** and **{names[1] if len(names)>1 else 'rank gap'}**.")
+                if names:
+                    driver1 = names[0]
+                    driver2 = names[1] if len(names)>1 else "rank gap"
+                    exp=(f"The model assigns **{lvl}** upset risk ({prob*100:.0f}%) for **{player}**. "
+                         f"The strongest drivers are **{driver1}** and **{driver2}**.")
+                else:
+                    exp=(f"The model assigns **{lvl}** upset risk ({prob*100:.0f}%) for **{player}** "
+                         f"based on rank difference and tournament fatigue.")
                 if not groq_key:
                     st.caption("Add a Groq API key (⚙️ above) for richer AI explanations.")
 
