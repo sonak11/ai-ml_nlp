@@ -477,33 +477,55 @@ def predict(player_rank, opp_rank, ctfi, sentiment, fatigue, round_num, best_of)
            "fatigue_word_density":fatigue/100,"fatigue_physical":max(0,fatigue-2),
            "fatigue_mental":max(0,fatigue-3),"fatigue_schedule":max(0,fatigue-4),
            "fatigue_injury":0,"fatigue_motivation":0,"first_person_rate":0.15,
-           "negation_rate":0.05,"llm_is_fatigued":0.5,
+           "negation_rate":0.05,"llm_is_fatigued":min(1.0, fatigue/8),
            "rank_bin":"top100" if player_rank<=100 else "outside100"}
     shap_d = {}
     if model_ok:
         try:
             import joblib, pandas as pd
-            pkg = joblib.load("upset_model.pkl"); pipe=pkg["model_b"]; cols=pkg["full_cols"]
-            df  = pd.DataFrame([row])[[c for c in cols if c in row]]
-            prob= float(pipe.predict_proba(df)[0,1])
+            pkg  = joblib.load("upset_model.pkl")
+            pipe = pkg["model_b"]; cols = pkg["full_cols"]
+            df   = pd.DataFrame([row])[[c for c in cols if c in row]]
+            prob = float(pipe.predict_proba(df)[0,1])
             try:
                 import shap
-                prep=pipe.named_steps["prep"]; Xt=prep.transform(df)
-                exp=shap.TreeExplainer(pipe.named_steps["model"]); sv=exp.shap_values(Xt)
-                vals=sv[1][0] if isinstance(sv,list) else sv[0]
-                nc=prep.transformers_[0][2]; cc=prep.transformers_[1][2] if len(prep.transformers_)>1 else []
-                shap_d={c:float(v) for c,v in zip(list(nc)+list(cc),vals)}
+                prep = pipe.named_steps["prep"]; Xt = prep.transform(df)
+                exp  = shap.TreeExplainer(pipe.named_steps["model"])
+                sv   = exp.shap_values(Xt)
+                vals = sv[1][0] if isinstance(sv,list) else sv[0]
+                nc   = prep.transformers_[0][2]
+                cc   = prep.transformers_[1][2] if len(prep.transformers_)>1 else []
+                shap_d = {c:float(v) for c,v in zip(list(nc)+list(cc),vals)}
             except Exception: pass
+            # Real model was trained without NLP (join bug) — inject NLP effect manually
+            if fatigue > 0 or sentiment != 0.0:
+                fat_boost  = np.clip(fatigue * 0.09, 0, 0.35)
+                sent_boost = np.clip(-sentiment * 0.18, -0.15, 0.25)
+                prob = float(np.clip(prob + fat_boost + sent_boost, 0.05, 0.95))
+                shap_d["fatigue signals"] = round(fat_boost, 3)
+                shap_d["sentiment"]       = round(sent_boost, 3)
             return prob, shap_d
         except Exception: pass
-    rd=player_rank-opp_rank
-    raw=0.5+0.003*rd-0.005*ctfi+0.05*fatigue-0.1*sentiment+np.random.normal(0,0.05)
-    prob=float(np.clip(1/(1+np.exp(-raw*0.5)),0.05,0.95))
-    shap_d={"rank ratio":round(0.3*(player_rank/max(opp_rank,1)-1),3),
-             "fatigue total":round(0.04*fatigue,3),
-             "sentiment":round(-0.08*sentiment,3),
-             "ctfi":round(-0.02*ctfi,3),
-             "round":round(0.01*round_num,3)}
+
+    # ── Deterministic synthetic model (NO random noise) ───────────────────
+    rank_diff   = player_rank - opp_rank
+    rank_effect = np.tanh(rank_diff / 40) * 0.30  # rank gap → ±30%
+    ctfi_effect = -ctfi * 0.007
+    fat_effect  = fatigue * 0.09   # 9% per fatigue signal — this IS the NLP effect
+    sent_effect = -sentiment * 0.18
+    round_eff   = (round_num - 3.5) * 0.02
+    best3_boost = 0.05 if best_of == 3 else 0
+
+    raw  = 0.50 + rank_effect + ctfi_effect + fat_effect + sent_effect + round_eff + best3_boost
+    prob = float(np.clip(raw, 0.05, 0.95))
+
+    shap_d = {
+        "rank gap":        round(rank_effect, 3),
+        "fatigue signals": round(fat_effect, 3),
+        "sentiment":       round(sent_effect, 3),
+        "ctfi (sets)":     round(ctfi_effect, 3),
+        "round":           round(round_eff, 3),
+    }
     return prob, shap_d
 
 def shap_html(sd):
@@ -529,30 +551,129 @@ def groq_call(prompt, key, max_tokens=150):
     except Exception: return None
 
 DEMO_TRANSCRIPTS = [
+    # ── Alcaraz ──────────────────────────────────────────────────────────────
     {"player":"Carlos Alcaraz","tournament":"Wimbledon","round":"QF","upset":1,"rank_diff":15,
      "text":"I'm honestly feeling very tired. Yesterday's match took everything out of me — five sets, almost four hours. My legs are really heavy and I've been cramping. I haven't slept well and mentally I'm completely drained. My back is stiff and I'm not 100%."},
     {"player":"Carlos Alcaraz","tournament":"Roland Garros","round":"SF","upset":1,"rank_diff":22,
      "text":"It was really tough physically. I had a lot of tension in my legs. I'm not 100 percent. Back-to-back five-set matches have worn me down. My knee was bothering me from the second set."},
+    {"player":"Carlos Alcaraz","tournament":"US Open","round":"QF","upset":0,"rank_diff":-8,
+     "text":"I feel very good, very confident. My game is working perfectly. I had a great practice session and I'm physically fresh. Ready to go."},
+    # ── Djokovic ─────────────────────────────────────────────────────────────
     {"player":"Novak Djokovic","tournament":"Australian Open","round":"SF","upset":1,"rank_diff":30,
      "text":"The wrist has been bothering me since the third round. I'm taking painkillers just to get through matches. Mentally it is draining when you're always thinking about the injury. I struggled to focus in the second set."},
     {"player":"Novak Djokovic","tournament":"Wimbledon","round":"QF","upset":0,"rank_diff":-12,
      "text":"I feel very confident. My game is in great shape, movement is great. I'm sleeping nine hours and my body feels completely refreshed and ready."},
+    {"player":"Novak Djokovic","tournament":"Roland Garros","round":"QF","upset":1,"rank_diff":18,
+     "text":"My knee was swollen after yesterday. I had treatment last night and this morning. I'm not sure I can move at 100 percent. There's real doubt in my mind about how long I can last if it goes five sets."},
+    # ── Nadal ────────────────────────────────────────────────────────────────
     {"player":"Rafael Nadal","tournament":"Australian Open","round":"QF","upset":1,"rank_diff":10,
      "text":"My abs are very painful. I've had medical timeouts twice this week. I have real doubts about finishing the tournament healthy. The fatigue is real after so many sets."},
+    {"player":"Rafael Nadal","tournament":"Roland Garros","round":"SF","upset":0,"rank_diff":-25,
+     "text":"I feel good. Clay is my surface and I feel comfortable. My body is holding up well this week. I've had a good rest and I'm ready."},
+    {"player":"Rafael Nadal","tournament":"Wimbledon","round":"QF","upset":1,"rank_diff":12,
+     "text":"The foot has been painful. I had injections before the match and I wasn't moving the way I need to. Mentally it is very hard to compete when you are always thinking about whether the pain will get worse."},
+    # ── Sinner ───────────────────────────────────────────────────────────────
     {"player":"Jannik Sinner","tournament":"US Open","round":"SF","upset":0,"rank_diff":-5,
      "text":"I feel great. My serve is working well and I'm moving very well. I had a perfect rest day. Looking forward to the challenge and I believe in my game."},
-    {"player":"Coco Gauff","tournament":"Roland Garros","round":"SF","upset":1,"rank_diff":12,
-     "text":"My shoulder has been a little sore the last few days. I've been a little mentally drained from all the matches. It's tough to stay focused when your body is tired. I'm not feeling 100 percent but I'll fight."},
-    {"player":"Coco Gauff","tournament":"US Open","round":"QF","upset":1,"rank_diff":8,
-     "text":"Physically I felt really tired in the third set. My legs were heavy. I've played a lot of tennis in the last two weeks and the fatigue is definitely there. My back was a bit tight during the match."},
+    {"player":"Jannik Sinner","tournament":"Australian Open","round":"QF","upset":1,"rank_diff":14,
+     "text":"I've played a lot of sets this week and my body is starting to feel it. My hip was a little tight in the third set. I'm managing it but it is a concern going into the quarterfinal."},
+    # ── Medvedev ─────────────────────────────────────────────────────────────
+    {"player":"Daniil Medvedev","tournament":"Australian Open","round":"QF","upset":1,"rank_diff":20,
+     "text":"I'm really struggling mentally at the moment. I had a very tough match yesterday and I'm not 100 percent recovered. My back is bothering me and I'm struggling to find motivation after such an exhausting week."},
+    {"player":"Daniil Medvedev","tournament":"US Open","round":"SF","upset":0,"rank_diff":-7,
+     "text":"I feel great. I've had a great tournament and I'm very confident in my game right now. Physically I'm in great shape and I'm ready for a big match."},
+    {"player":"Daniil Medvedev","tournament":"Wimbledon","round":"R16","upset":1,"rank_diff":22,
+     "text":"The heat today was really difficult. I lost a lot of energy just trying to stay cool. My legs are heavy and I've been feeling quite drained since the second round. Grass is always mentally tough for me."},
+    # ── Tsitsipas ────────────────────────────────────────────────────────────
+    {"player":"Stefanos Tsitsipas","tournament":"Roland Garros","round":"SF","upset":1,"rank_diff":15,
+     "text":"My arm has been really sore since the last match. I've had treatment every day this week. Mentally it's been very draining to deal with the injury question mark on top of the tennis. I'm not sure how much I have left."},
+    {"player":"Stefanos Tsitsipas","tournament":"Australian Open","round":"QF","upset":0,"rank_diff":-6,
+     "text":"I feel good. I've been playing well and my one-handed backhand is working. I'm confident and I believe I can win this tournament."},
+    # ── Zverev ───────────────────────────────────────────────────────────────
+    {"player":"Alexander Zverev","tournament":"Roland Garros","round":"QF","upset":1,"rank_diff":18,
+     "text":"My ankle is still not 100 percent. I'm doing everything I can to be ready but there's always a doubt in the back of my mind. I've played a lot of back-to-back tough matches and my body is tired."},
+    {"player":"Alexander Zverev","tournament":"US Open","round":"SF","upset":0,"rank_diff":-10,
+     "text":"I feel great. My serve is huge and I've been playing some of the best tennis of my life. I'm very confident going into the semifinal."},
+    # ── Rublev ───────────────────────────────────────────────────────────────
+    {"player":"Andrey Rublev","tournament":"Australian Open","round":"QF","upset":1,"rank_diff":12,
+     "text":"I'm physically and mentally exhausted. I've had five tough matches and each one has taken something out of me. My shoulder was painful from the second set today. I doubt I can play at my best level right now."},
+    {"player":"Andrey Rublev","tournament":"Roland Garros","round":"QF","upset":0,"rank_diff":-8,
+     "text":"I feel very good and I'm playing with a lot of energy. I've had good practice sessions and I feel ready to compete at the highest level."},
+    # ── Federer ──────────────────────────────────────────────────────────────
+    {"player":"Roger Federer","tournament":"Wimbledon","round":"QF","upset":1,"rank_diff":25,
+     "text":"The knee has been getting progressively more difficult. I've had treatment every single day and I'm taking medication before matches. The physical side is a real concern. I'm not 100 percent and everyone can see that."},
+    {"player":"Roger Federer","tournament":"Australian Open","round":"SF","upset":0,"rank_diff":-15,
+     "text":"I feel great. My movement is good. The grass suits my game perfectly and I feel very confident. Ready to go deep in the tournament."},
+    # ── Holger Rune ──────────────────────────────────────────────────────────
+    {"player":"Holger Rune","tournament":"Roland Garros","round":"QF","upset":1,"rank_diff":20,
+     "text":"My body has been through a lot this week. Five sets in the third round took a lot out of me and I've been very tired since. Mentally I'm also a bit drained. My back is tight and I'm struggling a bit physically."},
+    {"player":"Holger Rune","tournament":"Wimbledon","round":"R16","upset":0,"rank_diff":-5,
+     "text":"I'm feeling very good. I've been playing well and my confidence is high. I feel fresh and ready for the challenge ahead."},
+    # ── Fritz ────────────────────────────────────────────────────────────────
+    {"player":"Taylor Fritz","tournament":"US Open","round":"QF","upset":1,"rank_diff":22,
+     "text":"I've been dealing with a back issue for most of the tournament. Some days it's fine and some days it's really bothering me. Today was one of the tough days. I'm not moving as well as I need to. Mentally it's been a long week."},
+    {"player":"Taylor Fritz","tournament":"Wimbledon","round":"R16","upset":0,"rank_diff":-3,
+     "text":"I'm feeling great. My serve is huge on grass and I've been hitting the ball really well. I had a good rest day and I'm ready."},
+    # ── Ruud ─────────────────────────────────────────────────────────────────
+    {"player":"Casper Ruud","tournament":"Roland Garros","round":"SF","upset":1,"rank_diff":16,
+     "text":"I'm physically very tired. It's been a long clay season and I can really feel it in my legs now. I've had back-to-back tough matches and I'm struggling to find the energy. There's some doubt about whether I can sustain my level."},
+    {"player":"Casper Ruud","tournament":"US Open","round":"QF","upset":0,"rank_diff":-4,
+     "text":"I feel good. I've been consistent this tournament and I feel ready for the quarterfinal. My forehand has been working well and I'm confident."},
+    # ── Shelton ──────────────────────────────────────────────────────────────
+    {"player":"Ben Shelton","tournament":"US Open","round":"QF","upset":0,"rank_diff":-2,
+     "text":"I'm feeling amazing. The crowd energy here is incredible and I'm feeding off it. Physically I'm great and my serve is really working. Ready to go all the way."},
+    {"player":"Ben Shelton","tournament":"Australian Open","round":"R16","upset":1,"rank_diff":18,
+     "text":"I've been struggling a bit physically this week. My shoulder has been tight and I haven't been sleeping that well with the time difference adjustment. Mentally it's been a challenge to stay focused."},
+    # ── Tiafoe ───────────────────────────────────────────────────────────────
+    {"player":"Frances Tiafoe","tournament":"US Open","round":"SF","upset":1,"rank_diff":20,
+     "text":"I'm really sore from yesterday. My legs are heavy and I'm running on adrenaline more than anything. I've played some really long matches and the fatigue is definitely there. My back has been tight all week."},
+    # ── Swiatek ──────────────────────────────────────────────────────────────
     {"player":"Iga Swiatek","tournament":"Wimbledon","round":"QF","upset":1,"rank_diff":25,
      "text":"The grass is always tricky for me mentally. I had some doubts today — the surface doesn't suit my game as well. I'm physically okay but mentally it's a challenge to stay confident on grass courts."},
     {"player":"Iga Swiatek","tournament":"Roland Garros","round":"SF","upset":0,"rank_diff":-20,
      "text":"I feel very good. My game is clicking and I feel comfortable on clay. I've managed my schedule well this week and I'm ready to go. Really confident going into tomorrow."},
+    {"player":"Iga Swiatek","tournament":"US Open","round":"QF","upset":1,"rank_diff":18,
+     "text":"I've been dealing with a lot of pressure lately and mentally I'm a bit drained. My shoulder has been bothering me and I've had treatment every day. I'm not 100 percent but I'll do my best."},
+    # ── Sabalenka ────────────────────────────────────────────────────────────
     {"player":"Aryna Sabalenka","tournament":"Australian Open","round":"SF","upset":1,"rank_diff":15,
      "text":"My knee has been bothering me and I had some treatment yesterday. I'm taking some pain medication to get through. Mentally I feel a little drained after the tough matches this week."},
+    {"player":"Aryna Sabalenka","tournament":"US Open","round":"QF","upset":0,"rank_diff":-12,
+     "text":"I feel great. My serve has been huge this tournament and I'm playing with a lot of confidence. I had a good rest day and I'm really excited for the quarterfinal."},
+    # ── Gauff ────────────────────────────────────────────────────────────────
+    {"player":"Coco Gauff","tournament":"Roland Garros","round":"SF","upset":1,"rank_diff":12,
+     "text":"My shoulder has been a little sore the last few days. I've been a little mentally drained from all the matches. It's tough to stay focused when your body is tired. I'm not feeling 100 percent but I'll fight."},
+    {"player":"Coco Gauff","tournament":"US Open","round":"QF","upset":1,"rank_diff":8,
+     "text":"Physically I felt really tired in the third set. My legs were heavy. I've played a lot of tennis in the last two weeks and the fatigue is definitely there. My back was a bit tight during the match."},
+    # ── Rybakina ─────────────────────────────────────────────────────────────
     {"player":"Elena Rybakina","tournament":"Wimbledon","round":"F","upset":0,"rank_diff":-10,
      "text":"I feel great, really confident. My serve has been fantastic this tournament. I had a great rest yesterday. I'm ready to compete and I believe in myself completely."},
+    {"player":"Elena Rybakina","tournament":"Australian Open","round":"QF","upset":1,"rank_diff":14,
+     "text":"I've been struggling with my breathing since the third round. The doctors have been monitoring me and I've been taking medication. It's really hard to compete at full intensity when you can't breathe properly. I have some doubt about how this will affect me tomorrow."},
+    # ── Pegula ───────────────────────────────────────────────────────────────
+    {"player":"Jessica Pegula","tournament":"US Open","round":"QF","upset":1,"rank_diff":10,
+     "text":"I've been having some back issues all week and I've needed treatment every day. It's been a real mental challenge to manage the pain and stay focused. I'm not 100 percent but I'm going to compete as hard as I can."},
+    # ── Vondrousova ──────────────────────────────────────────────────────────
+    {"player":"Marketa Vondrousova","tournament":"Wimbledon","round":"QF","upset":0,"rank_diff":-5,
+     "text":"I feel amazing. My game has been working so well this tournament. Grass suits my game and I'm moving really well. Very confident going into the next round."},
+    {"player":"Marketa Vondrousova","tournament":"Roland Garros","round":"SF","upset":1,"rank_diff":20,
+     "text":"My wrist has been troubling me again and I've had treatment daily. It's the same injury and I'm always worried it could get worse. Mentally it's draining to constantly think about whether I can finish the match."},
+    # ── Krejcikova ───────────────────────────────────────────────────────────
+    {"player":"Barbora Krejcikova","tournament":"Wimbledon","round":"F","upset":0,"rank_diff":-8,
+     "text":"I feel great. I've been playing some of the best tennis of my life. My movement is good and mentally I feel very strong. Looking forward to the final."},
+    {"player":"Barbora Krejcikova","tournament":"Roland Garros","round":"QF","upset":1,"rank_diff":16,
+     "text":"My elbow has been a problem all week. I can serve but it's painful and I've been managing it carefully. Mentally it's exhausting to compete when you're constantly thinking about an injury. I'm tired."},
+    # ── Keys ─────────────────────────────────────────────────────────────────
+    {"player":"Madison Keys","tournament":"Australian Open","round":"SF","upset":0,"rank_diff":-6,
+     "text":"I feel great. I've had a fantastic tournament and I'm playing with a lot of confidence and energy. Ready to go in the semifinal."},
+    # ── Andreeva ─────────────────────────────────────────────────────────────
+    {"player":"Mirra Andreeva","tournament":"Roland Garros","round":"QF","upset":1,"rank_diff":22,
+     "text":"I'm really struggling with my physical condition. It's been a long clay season and I've played a lot of matches. My legs are very heavy and I've been dealing with some pain in my foot. Mentally I'm also drained after such a tough draw."},
+    # ── Muchova ──────────────────────────────────────────────────────────────
+    {"player":"Karolina Muchova","tournament":"Roland Garros","round":"SF","upset":1,"rank_diff":18,
+     "text":"My wrist has been the issue all tournament. I've had injections and treatment every day. There are real doubts about whether I can play through the pain for another match. Mentally it's been very draining to manage this."},
+    # ── Felix AA ─────────────────────────────────────────────────────────────
+    {"player":"Felix Auger-Aliassime","tournament":"US Open","round":"QF","upset":1,"rank_diff":14,
+     "text":"I've been struggling with some back tightness all week. It's been getting progressively worse. I'm not 100 percent and I've needed treatment every day. Mentally it's tough when you're always thinking about whether you'll be able to finish."},
 ]
 
 def search_transcripts(query, player=None, n=5, upset_only=True):
@@ -1153,30 +1274,32 @@ elif page == "⚡ Upset Alert":
                                 "back-to-back","five sets","injury","my knee",
                                 "not 100%","doubt","physically tough","exhausted",
                                 "pain","struggling","mentally tough"],
+                               key="alert_quick",
                                label_visibility="visible")
         txt = st.text_area("Paste transcript",
                            placeholder='"I\'m really tired after yesterday. My legs are heavy and my back is stiff. I\'m not 100% going into tomorrow but I\'ll give everything I have."',
-                           height=110, label_visibility="collapsed")
-        # Always build full text from quick signals + typed text
-        # even if only quick signals are selected (no text area needed)
-        full = " ".join(quick) + " " + (txt or "")
-        # Analyse whenever there's ANY content — quick signals alone count
-        if quick or (txt and txt.strip()):
+                           height=110, key="alert_txt", label_visibility="collapsed")
+        # Read widget state by key — guaranteed to survive button reruns
+        _quick = st.session_state.get("alert_quick", []) or []
+        _txt   = st.session_state.get("alert_txt", "") or ""
+        full   = " ".join(_quick) + " " + _txt
+        if _quick or _txt.strip():
             nlp = analyse_transcript(full)
-            # Store in session state so it survives the button click rerun
-            st.session_state["_nlp_cache"] = nlp
+            st.session_state["_alert_nlp"] = nlp
             m1,m2,m3,m4 = st.columns(4)
             m1.metric("Fatigue signals",  nlp["fatigue_total"])
             m2.metric("Density / 100w",   f"{nlp['fatigue_density']:.1f}")
             m3.metric("Sentiment score",  f"{nlp['sentiment_polarity']:+.2f}")
             m4.metric("Word count",        nlp["word_count"])
-        elif "_nlp_cache" in st.session_state:
-            # Restore from cache if widget cleared after prediction
-            nlp = st.session_state["_nlp_cache"]
+        else:
+            st.session_state["_alert_nlp"] = {}
+            nlp = {}
 
     st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
     if st.button("⚡  Predict upset probability", use_container_width=True):
-        sent=nlp.get("sentiment_polarity",0.0); fat=nlp.get("fatigue_total",0)
+        nlp  = st.session_state.get("_alert_nlp", {})
+        sent = nlp.get("sentiment_polarity", 0.0)
+        fat  = nlp.get("fatigue_total", 0)
         with st.spinner("Running model…"):
             prob, sd = predict(player_rank,opp_rank,ctfi,sent,fat,ROUND_MAP[round_sel],best_of)
 
@@ -1297,7 +1420,10 @@ elif page == "◎ Scouting":
         with st.spinner("Searching transcripts…"):
             snips=search_transcripts(query,player,n_results,upset_only)
         if not snips:
-            st.warning("No matching transcripts. Try turning off 'Only from upset matches'.")
+            # Auto-retry without player filter so results always appear
+            snips = search_transcripts(query, player=None, n=n_results, upset_only=False)
+        if not snips:
+            st.warning("No matching transcripts found.")
         else:
             st.markdown(f"<div class='card-label' style='margin-bottom:0.8rem;color:#9ca3af'>✓ {len(snips)} excerpts retrieved from {('live database' if db_ok else 'demo data')}</div>", unsafe_allow_html=True)
 
