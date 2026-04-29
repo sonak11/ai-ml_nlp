@@ -556,78 +556,64 @@ DEMO_TRANSCRIPTS = [
 ]
 
 def search_transcripts(query, player=None, n=5, upset_only=True):
-    try:
-        import sqlite3
-        if db_ok:
+    """Search transcripts by player name + keyword relevance. No complex joins."""
+    if db_ok:
+        try:
+            import sqlite3
             conn = sqlite3.connect("tennis_upsets.db")
 
-            # Build player filter clause
-            player_clause = ""
-            params = []
+            # Simple query — no joins, no subqueries, no drama
             if player:
-                player_clause = "AND LOWER(t.player_name) LIKE LOWER(?)"
-                params.append(f"%{player.split()[0]}%")  # match on first name
-
-            # Get transcripts — don't join matches (creates duplicates)
-            # Instead get upset flag from a subquery keyed on player+slam
-            rows = conn.execute(f"""
-                SELECT DISTINCT
-                    t.player_name,
-                    t.tourney_name,
-                    t.round,
-                    t.raw_text,
-                    COALESCE((
-                        SELECT MAX(m.upset)
-                        FROM matches m
-                        WHERE (LOWER(m.winner_name)=LOWER(t.player_name)
-                               OR LOWER(m.loser_name)=LOWER(t.player_name))
-                          AND m.slam_name = t.tourney_name
-                        LIMIT 1
-                    ), 0) AS upset
-                FROM transcripts t
-                WHERE t.raw_text IS NOT NULL
-                  AND LENGTH(t.raw_text) > 100
-                  {player_clause}
-                LIMIT 2000
-            """, params).fetchall()
+                parts = player.strip().split()
+                last  = parts[-1] if parts else player
+                first = parts[0]  if parts else player
+                rows  = conn.execute(
+                    "SELECT player_name, tourney_name, round, raw_text FROM transcripts "
+                    "WHERE raw_text IS NOT NULL AND LENGTH(raw_text) > 80 "
+                    "AND (LOWER(player_name) LIKE LOWER(?) "
+                    "  OR LOWER(player_name) LIKE LOWER(?) "
+                    "  OR LOWER(player_name) LIKE LOWER(?)) "
+                    "LIMIT 400",
+                    (f"%{player}%", f"%{last}%", f"%{first}%")
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT player_name, tourney_name, round, raw_text FROM transcripts "
+                    "WHERE raw_text IS NOT NULL AND LENGTH(raw_text) > 80 LIMIT 400"
+                ).fetchall()
             conn.close()
 
-            docs = [
-                {"player": r[0], "tournament": r[1], "round": r[2],
-                 "text": (r[3] or "")[:600], "upset": int(r[4] or 0), "rank_diff": 0}
-                for r in rows if r[0] and r[3]
-            ]
+            if rows:
+                docs = [
+                    {"player":     r[0] or "Unknown",
+                     "tournament": r[1] or "",
+                     "round":      r[2] or "",
+                     "text":       (r[3] or "")[:700],
+                     "upset":      0,
+                     "rank_diff":  0}
+                    for r in rows if r[3]
+                ]
+                # Rank by query keyword overlap
+                qw = set(re.findall(r"\w+", query.lower()))
+                for d in docs:
+                    d["_score"] = len(qw & set(re.findall(r"\w+", d["text"].lower())))
+                docs.sort(key=lambda d: -d["_score"])
+                return docs[:n]
 
-            # Refine player filter with full name check
-            if player:
-                pl = player.lower()
-                refined = [d for d in docs if pl in (d["player"] or "").lower()
-                           or pl.split()[-1] in (d["player"] or "").lower()]
-                docs = refined if refined else docs
+        except Exception:
+            pass  # fall through to demo
 
-            # Apply upset filter
-            if upset_only:
-                filtered = [d for d in docs if d.get("upset")]
-                docs = filtered if filtered else docs  # fallback to all if none
-
-            # Score by keyword overlap with query
-            qw = set(re.findall(r"\w+", query.lower()))
-            docs.sort(key=lambda d: -len(qw & set(re.findall(r"\w+", d["text"].lower()))))
-            return docs[:n]
-
-    except Exception as e:
-        pass  # fall through to demo
-
-    # Demo fallback
+    # Demo fallback (always has content)
     docs = list(DEMO_TRANSCRIPTS)
     if player:
-        pl = player.lower()
-        filtered = [d for d in docs if pl in d["player"].lower()
-                    or pl.split()[-1] in d["player"].lower()]
-        docs = filtered if filtered else docs
-    if upset_only:
-        docs2 = [d for d in docs if d.get("upset")]
-        docs = docs2 if docs2 else docs
+        pl    = player.lower()
+        parts = pl.split()
+        last  = parts[-1] if parts else pl
+        filt  = [d for d in docs
+                 if pl in d["player"].lower() or last in d["player"].lower()]
+        docs  = filt if filt else docs
+    qw = set(re.findall(r"\w+", query.lower()))
+    docs.sort(key=lambda d: -len(qw & set(re.findall(r"\w+", d["text"].lower()))))
     return docs[:n]
 
 def answer_sql(question):
@@ -1164,19 +1150,29 @@ elif page == "⚡ Upset Alert":
     if use_t:
         quick = st.multiselect("Quick-add signals",
                                ["tired","heavy legs","cramping","mentally drained",
-                                "back-to-back","five sets","injury","my knee","not 100%","doubt"],
+                                "back-to-back","five sets","injury","my knee",
+                                "not 100%","doubt","physically tough","exhausted",
+                                "pain","struggling","mentally tough"],
                                label_visibility="visible")
         txt = st.text_area("Paste transcript",
                            placeholder='"I\'m really tired after yesterday. My legs are heavy and my back is stiff. I\'m not 100% going into tomorrow but I\'ll give everything I have."',
                            height=110, label_visibility="collapsed")
-        full = " ".join(quick)+" "+(txt or "")
-        if full.strip():
+        # Always build full text from quick signals + typed text
+        # even if only quick signals are selected (no text area needed)
+        full = " ".join(quick) + " " + (txt or "")
+        # Analyse whenever there's ANY content — quick signals alone count
+        if quick or (txt and txt.strip()):
             nlp = analyse_transcript(full)
+            # Store in session state so it survives the button click rerun
+            st.session_state["_nlp_cache"] = nlp
             m1,m2,m3,m4 = st.columns(4)
             m1.metric("Fatigue signals",  nlp["fatigue_total"])
             m2.metric("Density / 100w",   f"{nlp['fatigue_density']:.1f}")
             m3.metric("Sentiment score",  f"{nlp['sentiment_polarity']:+.2f}")
             m4.metric("Word count",        nlp["word_count"])
+        elif "_nlp_cache" in st.session_state:
+            # Restore from cache if widget cleared after prediction
+            nlp = st.session_state["_nlp_cache"]
 
     st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
     if st.button("⚡  Predict upset probability", use_container_width=True):
@@ -1275,11 +1271,27 @@ elif page == "◎ Scouting":
 
     c1,c2=st.columns([1,2])
     with c1: player=st.selectbox("Select player",PLAYERS)
-    with c2: query=st.text_input("What do you want to know?","What are this player's fatigue signals before an upset?")
+    with c2:
+        QUERIES = [
+            "What are this player's fatigue signals before an upset?",
+            "What physical complaints does this player mention most?",
+            "How does this player describe their mental state before losing?",
+            "What injury concerns does this player mention?",
+            "When does this player seem most confident vs most doubtful?",
+            "What does this player say after a tough five-set match?",
+            "How does this player talk about their schedule and rest?",
+            "What patterns appear in this player's press conferences before upsets?",
+            "What motivational language does this player use?",
+            "How does this player describe their physical readiness?",
+        ]
+        query = st.selectbox("What do you want to know?", QUERIES)
+        custom_q = st.text_input("Or type a custom question…", placeholder="e.g. What does Djokovic say about his wrist?", label_visibility="collapsed")
+        if custom_q.strip():
+            query = custom_q.strip()
 
     a1,a2=st.columns(2)
     with a1: n_results=st.slider("Excerpts to retrieve",2,10,5)
-    with a2: upset_only=st.toggle("Only from upset matches",value=True)
+    with a2: upset_only=st.toggle("Only from upset matches",value=False)
 
     if st.button("◎  Generate scouting report", use_container_width=True):
         with st.spinner("Searching transcripts…"):
